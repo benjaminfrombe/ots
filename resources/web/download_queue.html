@@ -177,12 +177,18 @@
         }
 
         table {
-            min-width: 500px;
+            width: 100%;
         }
 
         th, td {
             padding: 12px 10px;
             font-size: 13px;
+        }
+
+        /* Compact columns */
+        th:first-child, td:first-child {
+            width: 40px;
+            text-align: center;
         }
 
         /* Status badges */
@@ -269,10 +275,17 @@
             display: flex;
             align-items: center;
             gap: 6px;
+            white-space: nowrap;
         }
 
         .service-cell img {
             border-radius: 4px;
+            flex-shrink: 0;
+            vertical-align: middle;
+        }
+
+        .service-cell span {
+            vertical-align: middle;
         }
 
         /* Mobile bottom action bar */
@@ -344,6 +357,14 @@
         }
 
         /* ============= RESPONSIVE BREAKPOINTS ============= */
+        
+        /* Tablet */
+        @media screen and (max-width: 900px) {
+            .hide-on-tablet {
+                display: none !important;
+            }
+        }
+
         @media screen and (max-width: 768px) {
             body {
                 padding-bottom: 80px;
@@ -382,6 +403,37 @@
             .hide-on-mobile {
                 display: none !important;
             }
+
+            /* Make name column take available space */
+            .name-cell {
+                max-width: 120px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            /* Compact status badge on mobile */
+            .status-badge {
+                padding: 3px 8px;
+                font-size: 10px;
+            }
+
+            /* Stack action buttons if needed */
+            .action-cell {
+                flex-wrap: wrap;
+                gap: 2px;
+            }
+
+            .action-cell .download-action-button {
+                padding: 5px;
+                min-width: 28px;
+                min-height: 28px;
+            }
+
+            .action-cell .download-action-button img {
+                width: 14px;
+                height: 14px;
+            }
         }
 
         @media screen and (max-width: 480px) {
@@ -397,13 +449,18 @@
                 padding: 10px 12px;
             }
 
-            table {
-                min-width: 400px;
+            th, td {
+                padding: 8px 6px;
+                font-size: 11px;
             }
 
             .mobile-action-bar button {
                 font-size: 9px;
                 padding: 8px 4px;
+            }
+
+            .name-cell {
+                max-width: 80px;
             }
         }
     </style>
@@ -480,15 +537,15 @@
                         <tr>
                             <th style="display: none;">Local ID</th>
                             {% if config.show_download_thumbnails %}
-                            <th></th>
+                            <th class="hide-on-mobile"></th>
                             {% endif %}
                             <th data-sort="track_number">#</th>
                             <th data-sort="item_name">Name</th>
                             <th class="hide-on-mobile" data-sort="album_name">Album</th>
-                            <th class="hide-on-mobile" data-sort="parent_category">By</th>
-                            <th data-sort="item_service">Service</th>
+                            <th class="hide-on-tablet hide-on-mobile" data-sort="parent_category">By</th>
+                            <th class="hide-on-mobile" data-sort="item_service">Service</th>
                             <th data-sort="item_status">Status</th>
-                            <th class="hide-on-mobile" data-sort="progress">Progress</th>
+                            <th class="hide-on-tablet hide-on-mobile" data-sort="progress">Progress</th>
                             <th>Action</th>
                         </tr>
                     </thead>
@@ -786,6 +843,7 @@
             // Thumbnail
             if (config.show_download_thumbnails) {
                 const imgCell = document.createElement('td');
+                imgCell.className = 'hide-on-mobile';
                 if (item.item_thumbnail) {
                     imgCell.innerHTML = `<img src="${item.item_thumbnail}" class="item-thumbnail" loading="lazy" style="width: ${config.thumbnail_size}px; height: ${config.thumbnail_size}px;">`;
                 }
@@ -801,7 +859,8 @@
 
             // Item name
             const nameCell = document.createElement('td');
-            nameCell.textContent = item.item_name.length > 24 ? item.item_name.substring(0, 24) + '...' : item.item_name;
+            nameCell.className = 'name-cell';
+            nameCell.textContent = item.item_name.length > 30 ? item.item_name.substring(0, 30) + '...' : item.item_name;
             nameCell.title = item.item_name;
             row.appendChild(nameCell);
 
@@ -815,17 +874,21 @@
 
             // Parent category
             const categoryCell = document.createElement('td');
-            categoryCell.className = 'hide-on-mobile';
+            categoryCell.className = 'hide-on-tablet hide-on-mobile';
             categoryCell.textContent = capitalizeFirstLetter(item.parent_category) || 'N/A';
             row.appendChild(categoryCell);
 
             // Service
             const serviceCell = document.createElement('td');
-            serviceCell.className = 'service-cell';
+            serviceCell.className = 'service-cell hide-on-mobile';
             if (item.item_service) {
-                serviceCell.innerHTML = `<img src="/icons/${item.item_service}.png" loading="lazy" style="width: 20px; height: 20px;">`;
+                const img = document.createElement('img');
+                img.src = `/icons/${item.item_service}.png`;
+                img.loading = 'lazy';
+                img.style.cssText = 'width: 20px; height: 20px;';
+                serviceCell.appendChild(img);
+                
                 const serviceName = document.createElement('span');
-                serviceName.className = 'hide-on-mobile';
                 serviceName.textContent = formatServiceName(item.item_service);
                 serviceCell.appendChild(serviceName);
             }
@@ -839,7 +902,7 @@
 
             // Progress bar
             const progressCell = document.createElement('td');
-            progressCell.className = 'hide-on-mobile';
+            progressCell.className = 'hide-on-tablet hide-on-mobile';
             progressCell.dataset.cell = 'progress';
             const progress = item.progress || 0;
             progressCell.innerHTML = `

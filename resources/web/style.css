@@ -335,6 +335,14 @@ input:not(:checked):hover {
 }
 
 /* ============= RESPONSIVE BREAKPOINTS ============= */
+
+/* Tablet */
+@media screen and (max-width: 900px) {
+    .hide-on-tablet {
+        display: none !important;
+    }
+}
+
 @media screen and (max-width: 768px) {
     .header ul {
         justify-content: space-around;
