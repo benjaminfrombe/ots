@@ -164,7 +164,9 @@ class DownloadWorker(QObject):
                     logger.error(f"Failed to fetch metadata for '{item_id}', Error: {str(e)}\nTraceback: {traceback.format_exc()}")
                     item['item_status'] = "Failed"
                     self.update_progress(item, self.tr("Failed") if self.gui else "Failed", 0)
-                    logger.info(f"DEBUG item_path from format_item_path: {item_path}")
+                    # item_path may not have been set if format_item_path failed — avoid NameError when logging
+                    item_path_debug = locals().get('item_path', None)
+                    logger.info(f"DEBUG item_path from format_item_path: {item_path_debug}")
                     self.readd_item_to_download_queue(item)
                     continue
 
@@ -313,6 +315,8 @@ class DownloadWorker(QObject):
                                         logger.warning(f"Download stream failed (attempt {_download_attempt + 1}), reconnecting session: {e}")
                                         try:
                                             from .api.spotify import spotify_re_init_session
+                                            # parsing_index isn't defined in this scope — use the active account number
+                                            parsing_index = config.get('active_account_number')
                                             spotify_re_init_session(account_pool[parsing_index])
                                             token = account_pool[parsing_index]['login']['session']
                                             # Also refresh quality check with new token
