@@ -90,12 +90,21 @@ class DownloadWorker(QObject):
                 return
 
 
+    def update_progress(self, item, status, progress_value):
+        """Update progress for both GUI and web interface"""
+        if self.gui:
+            self.progress.emit(item, status, progress_value)
+        # Always update the item's progress for web interface
+        item['progress'] = progress_value
+
+
     def yt_dlp_progress_hook(self, item, d):
-        progress = item['gui']['progress_bar'].value()
+        progress = item.get('progress', 0)
         progress_str = re.search(r'(\d+\.\d+)%', d['_percent_str'])
-        updated_progress_value = round(float(progress_str.group(1))) - 1
-        if updated_progress_value >= progress:
-            self.progress.emit(item, self.tr("Downloading"), updated_progress_value)
+        if progress_str:
+            updated_progress_value = round(float(progress_str.group(1))) - 1
+            if updated_progress_value >= progress:
+                self.update_progress(item, self.tr("Downloading") if self.gui else "Downloading", updated_progress_value)
         if item['item_status'] == 'Cancelled':
             raise Exception("Download cancelled by user.")
 
@@ -139,8 +148,7 @@ class DownloadWorker(QObject):
                     continue
 
                 item['item_status'] = "Downloading"
-                if self.gui:
-                    self.progress.emit(item, self.tr("Downloading"), 1)
+                self.update_progress(item, self.tr("Downloading") if self.gui else "Downloading", 1)
 
                 token = get_account_token(item_service, rotate=config.get("rotate_active_account_number"))
 
@@ -155,9 +163,8 @@ class DownloadWorker(QObject):
                 except (Exception, KeyError) as e:
                     logger.error(f"Failed to fetch metadata for '{item_id}', Error: {str(e)}\nTraceback: {traceback.format_exc()}")
                     item['item_status'] = "Failed"
-                    self.tr("Failed")
-                    if self.gui:
-                        self.progress.emit(item, self.tr("Failed"), 0)
+                    self.update_progress(item, self.tr("Failed") if self.gui else "Failed", 0)
+                    logger.info(f"DEBUG item_path from format_item_path: {item_path}")
                     self.readd_item_to_download_queue(item)
                     continue
 
@@ -173,8 +180,7 @@ class DownloadWorker(QObject):
                     file_path = os.path.join(dl_root, item_path)
                     directory, file_name = os.path.split(file_path)
 
-                    # Additional verification of path length limits, see https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation in case the file_name + directory exceeds the path limit 
-                    # and for UNIX systems it's the same https://serverfault.com/questions/9546/filename-length-limits-on-linux
+                    # Additional verification of path length limits
                     name, ext = os.path.splitext(file_name)
                     MAX_PATH_LENGTH = 260
                     available_length = MAX_PATH_LENGTH - len(os.path.join(directory, ''))
@@ -187,67 +193,84 @@ class DownloadWorker(QObject):
                     temp_file_path = os.path.join(directory, '~' + file_name)
 
                     os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    logger.info(f"DEBUG full file_path: {file_path}")
 
                     # Skip download if file exists under different extension
                     file_directory = os.path.dirname(file_path)
-                    base_filename = os.path.basename(file_path)
+                    target_filename = os.path.basename(file_path)
+                    
+                    logger.info(f"Checking for existing files matching: '{target_filename}.*' in {file_directory}")
 
-                    for entry in os.listdir(file_directory):
-                        full_path = os.path.join(file_directory, entry)  # Construct the full file path
+                    try:
+                        for entry in os.listdir(file_directory):
+                            full_path = os.path.join(file_directory, entry)
+                            
+                            if not os.path.isfile(full_path):
+                                continue
+                            
+                            # Skip subtitle/lyrics files
+                            if entry.endswith((".lrc", ".ass", ".srt", ".vtt")):
+                                continue
+                            
+                            # Check if file matches target (strip audio extension)
+                            audio_exts = [".mp3", ".flac", ".ogg", ".m4a", ".opus", ".wav", ".aac", ".wma"]
+                            entry_base = entry
+                            for ext in audio_exts:
+                                if entry.endswith(ext):
+                                    entry_base = entry[:-len(ext)]
+                                    break
+                            
+                            if entry_base == target_filename:
+                                logger.info(f"MATCH FOUND! File '{entry}' matches target '{target_filename}' - Skipping download")
+                                item['file_path'] = full_path
+                                if item_type in ['track', 'podcast_episode']:
+                                    if config.get('overwrite_existing_metadata'):
 
-                        # Check if the entry is a file and if its name matches the base filename
-                        if os.path.isfile(full_path) and os.path.splitext(entry)[0] == base_filename and os.path.splitext(entry)[1] not in ['.lrc', '.ass', '.srt', '.vtt']:
+                                        logger.info('Overwriting Existing Metadata')
 
-                            item['file_path'] = os.path.join(file_directory, entry)
-                            if item_type in ['track', 'podcast_episode']:
-                                if config.get('overwrite_existing_metadata'):
+                                        # Lyrics
+                                        if item_service in ("apple_music", "spotify", "tidal") and config.get('download_lyrics'):
+                                            item['item_status'] = 'Getting Lyrics'
+                                            self.update_progress(item, self.tr("Getting Lyrics") if self.gui else "Getting Lyrics", 99)
+                                            extra_metadata = globals()[f"{item_service}_get_lyrics"](token, item_id, item_type, item_metadata, file_path)
+                                            if isinstance(extra_metadata, dict):
+                                                item_metadata.update(extra_metadata)
 
-                                    logger.info('Overwriting Existing Metadata')
+                                        if not config.get('raw_media_download'):
+                                            strip_metadata(item)
+                                            embed_metadata(item, item_metadata)
 
-                                    # Lyrics
-                                    if item_service in ("apple_music", "spotify", "tidal") and config.get('download_lyrics'):
-                                        item['item_status'] = 'Getting Lyrics'
-                                        if self.gui:
-                                            self.progress.emit(item, self.tr("Getting Lyrics"), 99)
-                                        extra_metadata = globals()[f"{item_service}_get_lyrics"](token, item_id, item_type, item_metadata, file_path)
-                                        if isinstance(extra_metadata, dict):
-                                            item_metadata.update(extra_metadata)
+                                            # Thumbnail
+                                            if config.get('save_album_cover') or config.get('embed_cover'):
+                                                item['item_status'] = 'Setting Thumbnail'
+                                                self.update_progress(item, self.tr("Setting Thumbnail") if self.gui else "Setting Thumbnail", 99)
+                                                set_music_thumbnail(item['file_path'], item_metadata)
 
-                                    if not config.get('raw_media_download'):
-                                        strip_metadata(item)
-                                        embed_metadata(item, item_metadata)
+                                            if os.path.splitext(item['file_path'])[1] == '.mp3':
+                                                fix_mp3_metadata(item['file_path'])
+                                        else:
+                                            if config.get('save_album_cover'):
+                                                item['item_status'] = 'Setting Thumbnail'
+                                                self.update_progress(item, self.tr("Setting Thumbnail") if self.gui else "Setting Thumbnail", 99)
+                                                set_music_thumbnail(file_path, item_metadata)
 
-                                        # Thumbnail
-                                        if config.get('save_album_cover') or config.get('embed_cover'):
-                                            item['item_status'] = 'Setting Thumbnail'
-                                            if self.gui:
-                                                self.progress.emit(item, self.tr("Setting Thumbnail"), 99)
-                                            set_music_thumbnail(item['file_path'], item_metadata)
-
-                                        if os.path.splitext(item['file_path'])[1] == '.mp3':
-                                            fix_mp3_metadata(item['file_path'])
-                                    else:
-                                        if config.get('save_album_cover'):
-                                            item['item_status'] = 'Setting Thumbnail'
-                                            if self.gui:
-                                                self.progress.emit(item, self.tr("Setting Thumbnail"), 99)
-                                            set_music_thumbnail(file_path, item_metadata)
-
-                                # M3U
-                                if config.get('create_m3u_file') and item.get('parent_category') == 'playlist':
-                                    item['item_status'] = 'Adding To M3U'
-                                    if self.gui:
-                                        self.progress.emit(item, self.tr("Adding To M3U"), 1)
+                                    # M3U
+                                    if config.get('create_m3u_file') and item.get('parent_category') == 'playlist':
+                                        item['item_status'] = 'Adding To M3U'
+                                        self.update_progress(item, self.tr("Adding To M3U") if self.gui else "Adding To M3U", 99)
                                         add_to_m3u_file(item, item_metadata)
 
-                            if self.gui and item['item_status'] in ('Downloading', 'Setting Thumbnail', 'Adding To M3U'):
-                                self.progress.emit(item, self.tr("Already Exists"), 100)
-                            item['item_status'] = 'Already Exists'
-                            logger.info(f"File already exists, Skipping download for track by id '{item_id}'")
-                            time.sleep(0.2)
-                            item['progress'] = 100
-                            self.readd_item_to_download_queue(item)
-                            break
+                                if item['item_status'] in ('Downloading', 'Setting Thumbnail', 'Adding To M3U', 'Getting Lyrics'):
+                                    self.update_progress(item, self.tr("Already Exists") if self.gui else "Already Exists", 100)
+                                item['item_status'] = 'Already Exists'
+                                logger.info(f"File already exists (found as {entry}), Skipping download for track by id '{item_id}'")
+                                time.sleep(0.2)
+                                item['progress'] = 100
+                                self.readd_item_to_download_queue(item)
+                                break
+                    except FileNotFoundError:
+                        # Directory doesn't exist yet, will be created later
+                        pass
 
                 if item['item_status'] == 'Already Exists':
                     continue
@@ -255,14 +278,10 @@ class DownloadWorker(QObject):
                 if not item_metadata['is_playable']:
                     logger.error(f"Track is unavailable, track id '{item_id}'")
                     item['item_status'] = 'Unavailable'
-                    if self.gui:
-                        self.progress.emit(item, self.tr("Unavailable"), 0)
+                    self.update_progress(item, self.tr("Unavailable") if self.gui else "Unavailable", 0)
                     self.readd_item_to_download_queue(item)
                     continue
 
-                # Downloading the file here is necessary to animate progress bar through pyqtsignal.
-                # Could at some point just update the item manually inside the api file by passing
-                # item['gui']['progressbar'] and self.gui into a download_track function.
                 try:
                     # Audio
                     if item_service == "spotify":
@@ -291,8 +310,8 @@ class DownloadWorker(QObject):
                                 downloaded += len(data)
                                 if len(data) != 0:
                                     file.write(data)
-                                    if self.gui:
-                                        self.progress.emit(item, self.tr("Downloading"), int((downloaded / total_size) * 100))
+                                    progress_pct = int((downloaded / total_size) * 100)
+                                    self.update_progress(item, self.tr("Downloading") if self.gui else "Downloading", progress_pct)
                                 if len(data) == 0:
                                     break
                         stream.input_stream.stream().close()
@@ -360,7 +379,7 @@ class DownloadWorker(QObject):
                         if file.status_code == 200:
                             total_size = int(file.headers.get('content-length', 0))
                             downloaded = 0
-                            data_chunks = b''  # empty bytes object
+                            data_chunks = b''
 
                             for data in file.iter_content(chunk_size=config.get("download_chunk_size")):
                                 downloaded += len(data)
@@ -369,21 +388,19 @@ class DownloadWorker(QObject):
                                 if downloaded != total_size:
                                     if item['item_status'] == 'Cancelled':
                                         raise Exception("Download cancelled by user.")
-                                    if self.gui:
-                                        self.progress.emit(item, self.tr("Downloading"), int((downloaded / total_size) * 100))
+                                    progress_pct = int((downloaded / total_size) * 100)
+                                    self.update_progress(item, self.tr("Downloading") if self.gui else "Downloading", progress_pct)
 
                             key = calcbfkey(song["SNG_ID"])
 
-                            if self.gui:
-                                self.progress.emit(item, self.tr("Decrypting"), 99)
+                            self.update_progress(item, self.tr("Decrypting") if self.gui else "Decrypting", 99)
                             with open(temp_file_path, "wb") as fo:
                                 decryptfile(data_chunks, key, fo)
 
                         else:
                             logger.info(f"Deezer download attempts failed: {file.status_code}")
                             item['item_status'] = "Failed"
-                            if self.gui:
-                                self.progress.emit(item, self.tr("Failed"), 0)
+                            self.update_progress(item, self.tr("Failed") if self.gui else "Failed", 0)
                             self.readd_item_to_download_queue(item)
 
                     elif item_service in ("soundcloud", "youtube_music"):
@@ -391,7 +408,6 @@ class DownloadWorker(QObject):
                         ydl_opts = {}
                         if item_service == "soundcloud":
                             if token['oauth_token']:
-                                # Bitrate and format extracted later in the function as not all soundcloud songs have m4a available
                                 ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio'
                                 ydl_opts['username'] = 'oauth'
                                 ydl_opts['password'] = token['oauth_token']
@@ -408,8 +424,7 @@ class DownloadWorker(QObject):
                         ydl_opts['noprogress'] = True
                         ydl_opts['extract_audio'] = True
                         ydl_opts['outtmpl'] = temp_file_path
-                        if self.gui:
-                            ydl_opts['progress_hooks'] = [lambda d: self.yt_dlp_progress_hook(item, d)]
+                        ydl_opts['progress_hooks'] = [lambda d: self.yt_dlp_progress_hook(item, d)]
                         with YoutubeDL(ydl_opts) as video:
                             if item_service == "soundcloud" and token['oauth_token']:
                                 info_dict = video.extract_info(item_url)
@@ -440,8 +455,8 @@ class DownloadWorker(QObject):
                                     if total_size > 0 and downloaded != total_size:
                                         if item['item_status'] == 'Cancelled':
                                             raise Exception("Download cancelled by user.")
-                                        if self.gui:
-                                            self.progress.emit(item, self.tr("Downloading"), int((downloaded / total_size) * 100))
+                                        progress_pct = int((downloaded / total_size) * 100)
+                                        self.update_progress(item, self.tr("Downloading") if self.gui else "Downloading", progress_pct)
 
                     elif item_service == "apple_music":
                         default_format = '.m4a'
@@ -467,13 +482,11 @@ class DownloadWorker(QObject):
                         ydl_opts['fixup'] = 'never'
                         ydl_opts['allowed_extractors'] = ['generic']
                         ydl_opts['noprogress'] = True
-                        if self.gui:
-                            ydl_opts['progress_hooks'] = [lambda d: self.yt_dlp_progress_hook(item, d)]
+                        ydl_opts['progress_hooks'] = [lambda d: self.yt_dlp_progress_hook(item, d)]
                         with YoutubeDL(ydl_opts) as video:
                             video.download(stream_url)
 
-                        if self.gui:
-                            self.progress.emit(item, self.tr("Decrypting"), 99)
+                        self.update_progress(item, self.tr("Decrypting") if self.gui else "Decrypting", 99)
 
                         decrypted_temp_file_path = temp_file_path + '.m4a'
                         command = [
@@ -505,8 +518,7 @@ class DownloadWorker(QObject):
                         ydl_opts['fixup'] = 'never'
                         ydl_opts['allowed_extractors'] = ['generic']
                         ydl_opts['noprogress'] = True
-                        if self.gui:
-                            ydl_opts['progress_hooks'] = [lambda d: self.yt_dlp_progress_hook(item, d)]
+                        ydl_opts['progress_hooks'] = [lambda d: self.yt_dlp_progress_hook(item, d)]
 
                         # Extract preferred language
                         encrypted_files = []
@@ -527,8 +539,7 @@ class DownloadWorker(QObject):
                                 ydl_opts['http_headers'] = headers
                                 ydl_opts['outtmpl'] = temp_file_path + f' - {version["audio_locale"]}.%(ext)s.%(ext)s'
 
-                                if self.gui:
-                                    self.progress.emit(item, self.tr("Downloading Video"), 1)
+                                self.update_progress(item, self.tr("Downloading Video") if self.gui else "Downloading Video", 1)
                                 ydl_video_opts = ydl_opts
                                 ydl_video_opts['format'] = (f'(bestvideo[height<={config.get("preferred_video_resolution")}][ext=mp4]/bestvideo)')
                                 with YoutubeDL(ydl_video_opts) as video:
@@ -540,14 +551,11 @@ class DownloadWorker(QObject):
                                     })
                                     video.download(mpd_url)
 
-                                # I would prefer to download video and audio together but yt-dlp
-                                # appends a format string when ext is used together.
                                 token = get_account_token(item_service)
                                 headers['Authorization'] = f'Bearer {token}'
                                 ydl_opts['http_headers'] = headers
 
-                                if self.gui:
-                                    self.progress.emit(item, self.tr("Downloading Audio"), 1)
+                                self.update_progress(item, self.tr("Downloading Audio") if self.gui else "Downloading Audio", 1)
                                 ydl_audio_opts = ydl_opts
                                 ydl_audio_opts['format'] = ('(bestaudio[ext=m4a]/bestaudio)')
                                 with YoutubeDL(ydl_audio_opts) as audio:
@@ -563,8 +571,7 @@ class DownloadWorker(QObject):
 
                                 # Download Chapters
                                 if not config.get('raw_media_download') and config.get('download_chapters'):
-                                    if self.gui:
-                                        self.progress.emit(item, self.tr("Downloading Chapters"), 1)
+                                    self.update_progress(item, self.tr("Downloading Chapters") if self.gui else "Downloading Chapters", 1)
                                     chapter_file = temp_file_path + f' - {version["audio_locale"]}.txt'
                                     if not os.path.exists(chapter_file):
                                         resp = requests.get(f'https://static.crunchyroll.com/skip-events/production/{version["guid"]}.json')
@@ -582,8 +589,7 @@ class DownloadWorker(QObject):
                                                 'language': version['audio_locale']
                                             })
 
-                        if self.gui:
-                            self.progress.emit(item, self.tr("Decrypting"), 99)
+                        self.update_progress(item, self.tr("Decrypting") if self.gui else "Decrypting", 99)
 
                         for encrypted_file in encrypted_files:
                             decrypted_temp_file_path = os.path.splitext(encrypted_file['path'])[0]
@@ -616,10 +622,9 @@ class DownloadWorker(QObject):
                         # Download Subtitles
                         if config.get("download_subtitles"):
                             item['item_status'] = 'Downloading Subtitles'
-                            if self.gui:
-                                self.progress.emit(item, self.tr("Downloading Subtitles"), 99)
+                            self.update_progress(item, self.tr("Downloading Subtitles") if self.gui else "Downloading Subtitles", 99)
 
-                            finished_sub_langs = [] # Needed for duplicates
+                            finished_sub_langs = []
                             for subtitle_format in subtitle_formats:
                                 lang = subtitle_format['language']
                                 if lang in finished_sub_langs:
@@ -641,9 +646,6 @@ class DownloadWorker(QObject):
                     elif item_service == 'generic':
                         temp_file_path = ''
                         ydl_opts = {}
-                        # Prefer bestvideo in mp4 with specified resolution, then
-                        # just best video with specified resolution, and if neither
-                        # exist just go with best.
                         ydl_opts['format'] = (f'(bestvideo[height<={config.get("preferred_video_resolution")}][ext=mp4]+bestaudio[ext=m4a])/'
                                             f'(bestvideo[height<={config.get("preferred_video_resolution")}]+bestaudio)/'
                                             f'best')
@@ -653,20 +655,17 @@ class DownloadWorker(QObject):
                         ydl_opts['outtmpl'] = config.get('video_download_path') + os.path.sep + '%(title)s.%(ext)s'
                         ydl_opts['ffmpeg_location'] = config.get('_ffmpeg_bin_path')
                         ydl_opts['postprocessors'] = [{
-                            'key': 'FFmpegMetadata',  # Enables embedding metadata
+                            'key': 'FFmpegMetadata',
                         }]
-                        if self.gui:
-                            ydl_opts['progress_hooks'] = [lambda d: self.yt_dlp_progress_hook(item, d)]
+                        ydl_opts['progress_hooks'] = [lambda d: self.yt_dlp_progress_hook(item, d)]
                         with YoutubeDL(ydl_opts) as video:
                             item['file_path'] = video.prepare_filename(video.extract_info(item_id, download=False))
                             video.download(item_id)
 
                 except RuntimeError as e:
-                    # Likely Ratelimit
                     logger.info(f"Download failed: {item}, Error: {str(e)}\nTraceback: {traceback.format_exc()}")
                     item['item_status'] = 'Failed'
-                    if self.gui:
-                        self.progress.emit(item, self.tr("Failed"), 0)
+                    self.update_progress(item, self.tr("Failed") if self.gui else "Failed", 0)
                     self.readd_item_to_download_queue(item)
                     continue
 
@@ -677,8 +676,7 @@ class DownloadWorker(QObject):
                         # Lyrics
                         if item_service in ("apple_music", "spotify", "tidal") and config.get('download_lyrics'):
                             item['item_status'] = 'Getting Lyrics'
-                            if self.gui:
-                                self.progress.emit(item, self.tr("Getting Lyrics"), 99)
+                            self.update_progress(item, self.tr("Getting Lyrics") if self.gui else "Getting Lyrics", 99)
                             extra_metadata = globals()[f"{item_service}_get_lyrics"](token, item_id, item_type, item_metadata, file_path)
                             if isinstance(extra_metadata, dict):
                                 item_metadata.update(extra_metadata)
@@ -696,8 +694,7 @@ class DownloadWorker(QObject):
                         # Convert file format and embed metadata
                         if not config.get('raw_media_download'):
                             item['item_status'] = 'Converting'
-                            if self.gui:
-                                self.progress.emit(item, self.tr("Converting"), 99)
+                            self.update_progress(item, self.tr("Converting") if self.gui else "Converting", 99)
 
                             if config.get('use_custom_file_bitrate'):
                                 bitrate = config.get("file_bitrate")
@@ -708,8 +705,7 @@ class DownloadWorker(QObject):
                             # Thumbnail
                             if config.get('save_album_cover') or config.get('embed_cover'):
                                 item['item_status'] = 'Setting Thumbnail'
-                                if self.gui:
-                                    self.progress.emit(item, self.tr("Setting Thumbnail"), 99)
+                                self.update_progress(item, self.tr("Setting Thumbnail") if self.gui else "Setting Thumbnail", 99)
                                 set_music_thumbnail(file_path, item_metadata)
 
                             if os.path.splitext(file_path)[1] == '.mp3':
@@ -717,16 +713,14 @@ class DownloadWorker(QObject):
                         else:
                             if config.get('save_album_cover'):
                                 item['item_status'] = 'Setting Thumbnail'
-                                if self.gui:
-                                    self.progress.emit(item, self.tr("Setting Thumbnail"), 99)
+                                self.update_progress(item, self.tr("Setting Thumbnail") if self.gui else "Setting Thumbnail", 99)
                                 set_music_thumbnail(file_path, item_metadata)
 
                         # M3U
                         if config.get('create_m3u_file') and item.get('parent_category') == 'playlist':
                             item['item_status'] = 'Adding To M3U'
-                            if self.gui:
-                                self.progress.emit(item, self.tr("Adding To M3U"), 1)
-                                add_to_m3u_file(item, item_metadata)
+                            self.update_progress(item, self.tr("Adding To M3U") if self.gui else "Adding To M3U", 99)
+                            add_to_m3u_file(item, item_metadata)
 
                     # Video Formatting
                     elif item_type in ('movie', 'episode'):
@@ -737,8 +731,7 @@ class DownloadWorker(QObject):
 
                         if not config.get("raw_media_download"):
                             item['item_status'] = 'Converting'
-                            if self.gui:
-                                self.progress.emit(item, self.tr("Converting"), 99)
+                            self.update_progress(item, self.tr("Converting") if self.gui else "Converting", 99)
                             if item_type == "episode":
                                 output_format = config.get("show_file_format")
                             elif item_type == "movie":
@@ -751,8 +744,7 @@ class DownloadWorker(QObject):
                 item['item_status'] = 'Downloaded'
                 logger.info("Item Successfully Downloaded")
                 item['progress'] = 100
-                if self.gui:
-                    self.progress.emit(item, self.tr("Downloaded"), 100)
+                self.update_progress(item, self.tr("Downloaded") if self.gui else "Downloaded", 100)
                 try:
                     config.set('total_downloaded_data', config.get('total_downloaded_data') + os.path.getsize(item['file_path']))
                     config.set('total_downloaded_items', config.get('total_downloaded_items') + 1)
@@ -766,11 +758,9 @@ class DownloadWorker(QObject):
                 logger.error(f"Unknown Exception: {str(e)}\nTraceback: {traceback.format_exc()}")
                 if item['item_status'] != "Cancelled":
                     item['item_status'] = "Failed"
-                    if self.gui:
-                        self.progress.emit(item, self.tr("Failed"), 0)
+                    self.update_progress(item, self.tr("Failed") if self.gui else "Failed", 0)
                 else:
-                    if self.gui:
-                        self.progress.emit(item, self.tr("Cancelled"), 0)
+                    self.update_progress(item, self.tr("Cancelled") if self.gui else "Cancelled", 0)
 
                 time.sleep(config.get("download_delay"))
                 self.readd_item_to_download_queue(item)

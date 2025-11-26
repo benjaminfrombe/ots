@@ -175,12 +175,18 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        console.log('Download successful');
+                        console.log('Download started successfully');
+                        // Redirect to download queue page
+                        window.location.href = '/download_queue';
                     } else {
                         console.error('Download failed:', data.error);
+                        alert('Download failed: ' + (data.error || 'Unknown error'));
                     }
                 })
-                .catch(error => console.error('Error:', error));
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error starting download: ' + error.message);
+                });
             }
         </script>
     </body>
