@@ -272,16 +272,13 @@
 
         /* Service icon */
         .service-cell {
-            display: flex;
-            align-items: center;
-            gap: 6px;
             white-space: nowrap;
         }
 
         .service-cell img {
             border-radius: 4px;
-            flex-shrink: 0;
             vertical-align: middle;
+            margin-right: 6px;
         }
 
         .service-cell span {
@@ -878,19 +875,11 @@
             categoryCell.textContent = capitalizeFirstLetter(item.parent_category) || 'N/A';
             row.appendChild(categoryCell);
 
-            // Service
+            // Service (icon and text inline)
             const serviceCell = document.createElement('td');
             serviceCell.className = 'service-cell hide-on-mobile';
             if (item.item_service) {
-                const img = document.createElement('img');
-                img.src = `/icons/${item.item_service}.png`;
-                img.loading = 'lazy';
-                img.style.cssText = 'width: 20px; height: 20px;';
-                serviceCell.appendChild(img);
-                
-                const serviceName = document.createElement('span');
-                serviceName.textContent = formatServiceName(item.item_service);
-                serviceCell.appendChild(serviceName);
+                serviceCell.innerHTML = `<img src="/icons/${item.item_service}.png" loading="lazy" style="width: 20px; height: 20px;"><span>${formatServiceName(item.item_service)}</span>`;
             }
             row.appendChild(serviceCell);
 
