@@ -299,7 +299,36 @@ class DownloadWorker(QObject):
                             quality = AudioQuality.VERY_HIGH
                             bitrate = "320k"
 
-                        stream = token.content_feeder().load(audio_key, VorbisOnlyAudioQuality(quality), False, None)
+                        # === SESSION RECONNECT PATCH ===
+                        max_download_retries = 2
+                        stream = None
+                        for _download_attempt in range(max_download_retries):
+                            try:
+                                stream = token.content_feeder().load(audio_key, VorbisOnlyAudioQuality(quality), False, None)
+                                break  # Success
+                            except (RuntimeError, OSError) as e:
+                                error_str = str(e)
+                                if any(x in error_str for x in ['Bad file descriptor', 'Cannot get alternative track', 'Unable to']):
+                                    if _download_attempt < max_download_retries - 1:
+                                        logger.warning(f"Download stream failed (attempt {_download_attempt + 1}), reconnecting session: {e}")
+                                        try:
+                                            from .api.spotify import spotify_re_init_session
+                                            spotify_re_init_session(account_pool[parsing_index])
+                                            token = account_pool[parsing_index]['login']['session']
+                                            # Also refresh quality check with new token
+                                            if token.get_user_attribute("type") == "premium" and item_type == 'track':
+                                                quality = AudioQuality.VERY_HIGH
+                                            logger.info("Session reconnected successfully, retrying download...")
+                                        except Exception as reinit_err:
+                                            logger.error(f"Session reinit failed: {reinit_err}")
+                                            raise e
+                                    else:
+                                        raise
+                                else:
+                                    raise
+                        if stream is None:
+                            raise RuntimeError("Failed to load audio stream after retries")
+                        # === END RECONNECT PATCH ===
                         total_size = stream.input_stream.size
                         downloaded = 0
                         with open(temp_file_path, 'wb') as file:
