@@ -29,38 +29,6 @@
         }
         table {
             font-size: 0.9em;
-            /* Prevent columns from auto-resizing when text length changes */
-            table-layout: fixed;
-            width: 100%;
-        }
-
-        /* Fix widths for columns that can grow/shrink — use ellipsis so status text doesn't push layout */
-        th[data-sort="item_status"], td[data-cell="status"] {
-            width: 12%;
-            min-width: 110px;
-            max-width: 220px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        th[data-sort="progress"], td[data-cell="progress"] {
-            width: 14%;
-            min-width: 140px;
-            max-width: 260px;
-        }
-
-        th[data-sort="track_number"], td:nth-child(3) {
-            width: 8%;
-            min-width: 44px;
-            text-align: center;
-        }
-
-        td[data-cell="action"] {
-            width: 120px;
-            min-width: 90px;
-            max-width: 160px;
-            white-space: nowrap;
         }
         /* Smooth progress bar transitions */
         .progress-bar-fill {
@@ -296,8 +264,6 @@
                 // Update status
                 if (statusCell && statusCell.textContent !== newItem.item_status) {
                     statusCell.textContent = newItem.item_status || 'N/A';
-                    // Provide full status on hover while keeping cell width fixed
-                    statusCell.title = newItem.item_status || 'N/A';
                     
                     // Update action buttons when status changes
                     if (actionCell) {
@@ -398,8 +364,6 @@
             const statusCell = document.createElement('td');
             statusCell.dataset.cell = 'status';
             statusCell.textContent = item.item_status || 'N/A';
-            // Provide full status on hover while keeping cell width fixed
-            statusCell.title = item.item_status || 'N/A';
             row.appendChild(statusCell);
 
             // Progress bar with smooth transition
