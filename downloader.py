@@ -109,6 +109,121 @@ class DownloadWorker(QObject):
             raise Exception("Download cancelled by user.")
 
 
+    def _find_account_index(self, service, token):
+        """Find the index of the account in account_pool that matches the given token"""
+        for idx, account in enumerate(account_pool):
+            if account.get('service') == service:
+                account_token = account.get('login', {}).get('session')
+                if account_token is token:
+                    return idx
+        return None
+
+    def _get_available_accounts(self, service):
+        """Get list of available account indices for a service"""
+        indices = []
+        for idx, account in enumerate(account_pool):
+            if account.get('service') == service and account.get('active', True):
+                indices.append(idx)
+        return indices
+
+    def _try_get_spotify_stream(self, item, item_id, item_type, token, quality, tried_accounts=None):
+        """
+        Try to get a Spotify stream, with fallback to other accounts if one fails.
+        Returns (stream, token, account_index) on success, raises exception on complete failure.
+        """
+        from .api.spotify import spotify_re_init_session
+        
+        if tried_accounts is None:
+            tried_accounts = set()
+        
+        if item_type == "track":
+            audio_key = TrackId.from_base62(item_id)
+        elif item_type == "podcast_episode":
+            audio_key = EpisodeId.from_base62(item_id)
+        
+        # Find current account index
+        current_account_idx = self._find_account_index('spotify', token)
+        available_accounts = self._get_available_accounts('spotify')
+        
+        max_retries_per_account = 2
+        
+        # Try current account first
+        if current_account_idx is not None and current_account_idx not in tried_accounts:
+            for attempt in range(max_retries_per_account):
+                try:
+                    stream = token.content_feeder().load(audio_key, VorbisOnlyAudioQuality(quality), False, None)
+                    logger.info(f"Successfully got stream from account index {current_account_idx}")
+                    return stream, token, current_account_idx
+                except (RuntimeError, OSError) as e:
+                    error_str = str(e)
+                    if any(x in error_str for x in ['Bad file descriptor', 'Cannot get alternative track', 'Unable to']):
+                        if attempt < max_retries_per_account - 1:
+                            logger.warning(f"Download stream failed (attempt {attempt + 1}) on account {current_account_idx}, reconnecting session: {e}")
+                            try:
+                                spotify_re_init_session(account_pool[current_account_idx])
+                                token = account_pool[current_account_idx]['login']['session']
+                                # Refresh quality check with new token
+                                if token.get_user_attribute("type") == "premium" and item_type == 'track':
+                                    quality = AudioQuality.VERY_HIGH
+                                logger.info("Session reconnected successfully, retrying...")
+                            except Exception as reinit_err:
+                                logger.error(f"Session reinit failed for account {current_account_idx}: {reinit_err}")
+                                break  # Try next account
+                        else:
+                            logger.warning(f"Max retries reached for account {current_account_idx}")
+                            break  # Try next account
+                    else:
+                        raise
+            
+            tried_accounts.add(current_account_idx)
+        
+        # Try other available accounts
+        for account_idx in available_accounts:
+            if account_idx in tried_accounts:
+                continue
+            
+            logger.info(f"Trying fallback account index {account_idx}")
+            tried_accounts.add(account_idx)
+            
+            try:
+                # Get token from this account
+                fallback_token = account_pool[account_idx]['login']['session']
+                
+                # Check quality for this account
+                fallback_quality = AudioQuality.HIGH
+                if fallback_token.get_user_attribute("type") == "premium" and item_type == 'track':
+                    fallback_quality = AudioQuality.VERY_HIGH
+                
+                for attempt in range(max_retries_per_account):
+                    try:
+                        stream = fallback_token.content_feeder().load(audio_key, VorbisOnlyAudioQuality(fallback_quality), False, None)
+                        logger.info(f"Successfully got stream from fallback account index {account_idx}")
+                        return stream, fallback_token, account_idx
+                    except (RuntimeError, OSError) as e:
+                        error_str = str(e)
+                        if any(x in error_str for x in ['Bad file descriptor', 'Cannot get alternative track', 'Unable to']):
+                            if attempt < max_retries_per_account - 1:
+                                logger.warning(f"Fallback account {account_idx} stream failed (attempt {attempt + 1}), reconnecting: {e}")
+                                try:
+                                    spotify_re_init_session(account_pool[account_idx])
+                                    fallback_token = account_pool[account_idx]['login']['session']
+                                    logger.info(f"Fallback account {account_idx} reconnected, retrying...")
+                                except Exception as reinit_err:
+                                    logger.error(f"Fallback account {account_idx} reinit failed: {reinit_err}")
+                                    break
+                            else:
+                                logger.warning(f"Max retries reached for fallback account {account_idx}")
+                                break
+                        else:
+                            raise
+            except Exception as e:
+                logger.error(f"Fallback account {account_idx} failed completely: {e}")
+                continue
+        
+        # All accounts exhausted
+        raise RuntimeError(f"Failed to load audio stream after trying {len(tried_accounts)} account(s)")
+
+
     def run(self):
         while self.is_running:
             try:
@@ -288,10 +403,6 @@ class DownloadWorker(QObject):
 
                         default_format = ".ogg"
                         temp_file_path += default_format
-                        if item_type == "track":
-                            audio_key = TrackId.from_base62(item_id)
-                        elif item_type == "podcast_episode":
-                            audio_key = EpisodeId.from_base62(item_id)
 
                         quality = AudioQuality.HIGH
                         bitrate = "160k"
@@ -299,36 +410,9 @@ class DownloadWorker(QObject):
                             quality = AudioQuality.VERY_HIGH
                             bitrate = "320k"
 
-                        # === SESSION RECONNECT PATCH ===
-                        max_download_retries = 2
-                        stream = None
-                        for _download_attempt in range(max_download_retries):
-                            try:
-                                stream = token.content_feeder().load(audio_key, VorbisOnlyAudioQuality(quality), False, None)
-                                break  # Success
-                            except (RuntimeError, OSError) as e:
-                                error_str = str(e)
-                                if any(x in error_str for x in ['Bad file descriptor', 'Cannot get alternative track', 'Unable to']):
-                                    if _download_attempt < max_download_retries - 1:
-                                        logger.warning(f"Download stream failed (attempt {_download_attempt + 1}), reconnecting session: {e}")
-                                        try:
-                                            from .api.spotify import spotify_re_init_session
-                                            spotify_re_init_session(account_pool[parsing_index])
-                                            token = account_pool[parsing_index]['login']['session']
-                                            # Also refresh quality check with new token
-                                            if token.get_user_attribute("type") == "premium" and item_type == 'track':
-                                                quality = AudioQuality.VERY_HIGH
-                                            logger.info("Session reconnected successfully, retrying download...")
-                                        except Exception as reinit_err:
-                                            logger.error(f"Session reinit failed: {reinit_err}")
-                                            raise e
-                                    else:
-                                        raise
-                                else:
-                                    raise
-                        if stream is None:
-                            raise RuntimeError("Failed to load audio stream after retries")
-                        # === END RECONNECT PATCH ===
+                        # Use the new helper method for stream acquisition with fallback
+                        stream, token, _ = self._try_get_spotify_stream(item, item_id, item_type, token, quality)
+
                         total_size = stream.input_stream.size
                         downloaded = 0
                         with open(temp_file_path, 'wb') as file:
