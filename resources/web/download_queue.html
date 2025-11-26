@@ -178,6 +178,7 @@
 
         table {
             width: 100%;
+            table-layout: fixed;
         }
 
         th, td {
@@ -185,11 +186,21 @@
             font-size: 13px;
         }
 
-        /* Compact columns */
-        th:first-child, td:first-child {
-            width: 40px;
-            text-align: center;
+        /* Compact columns with fixed widths to prevent shifting */
+        th, td {
+            padding: 12px 10px;
+            font-size: 13px;
         }
+
+        /* Fixed column widths */
+        .col-track { width: 50px; text-align: center; }
+        .col-name { width: 20%; min-width: 120px; }
+        .col-album { width: 15%; min-width: 100px; }
+        .col-by { width: 12%; min-width: 80px; }
+        .col-service { width: 10%; min-width: 90px; }
+        .col-status { width: 12%; min-width: 100px; }
+        .col-progress { width: 15%; min-width: 120px; }
+        .col-action { width: 10%; min-width: 80px; }
 
         /* Status badges */
         .status-badge {
@@ -536,14 +547,14 @@
                             {% if config.show_download_thumbnails %}
                             <th class="hide-on-mobile"></th>
                             {% endif %}
-                            <th data-sort="track_number">#</th>
-                            <th data-sort="item_name">Name</th>
-                            <th class="hide-on-mobile" data-sort="album_name">Album</th>
-                            <th class="hide-on-tablet hide-on-mobile" data-sort="parent_category">By</th>
-                            <th class="hide-on-mobile" data-sort="item_service">Service</th>
-                            <th data-sort="item_status">Status</th>
-                            <th class="hide-on-tablet hide-on-mobile" data-sort="progress">Progress</th>
-                            <th>Action</th>
+                            <th class="col-track" data-sort="track_number">#</th>
+                            <th class="col-name" data-sort="item_name">Name</th>
+                            <th class="col-album hide-on-mobile" data-sort="album_name">Album</th>
+                            <th class="col-by hide-on-tablet hide-on-mobile" data-sort="item_by">By</th>
+                            <th class="col-service hide-on-mobile" data-sort="item_service">Service</th>
+                            <th class="col-status" data-sort="item_status">Status</th>
+                            <th class="col-progress hide-on-tablet hide-on-mobile" data-sort="progress">Progress</th>
+                            <th class="col-action">Action</th>
                         </tr>
                     </thead>
                     <tbody id="download-queue-table">
@@ -849,35 +860,37 @@
 
             // Track number
             const trackCell = document.createElement('td');
+            trackCell.className = 'col-track';
             const trackNum = getTrackNumber(item);
             trackCell.textContent = trackNum !== null ? trackNum : '';
-            trackCell.style.textAlign = 'center';
             row.appendChild(trackCell);
 
             // Item name
             const nameCell = document.createElement('td');
-            nameCell.className = 'name-cell';
+            nameCell.className = 'col-name name-cell';
             nameCell.textContent = item.item_name.length > 30 ? item.item_name.substring(0, 30) + '...' : item.item_name;
             nameCell.title = item.item_name;
             row.appendChild(nameCell);
 
             // Album name
             const albumCell = document.createElement('td');
-            albumCell.className = 'hide-on-mobile';
+            albumCell.className = 'col-album hide-on-mobile';
             const albumName = getAlbumName(item);
             albumCell.textContent = albumName ? (albumName.length > 20 ? albumName.substring(0, 20) + '...' : albumName) : 'N/A';
             albumCell.title = albumName;
             row.appendChild(albumCell);
 
-            // Parent category
-            const categoryCell = document.createElement('td');
-            categoryCell.className = 'hide-on-tablet hide-on-mobile';
-            categoryCell.textContent = capitalizeFirstLetter(item.parent_category) || 'N/A';
-            row.appendChild(categoryCell);
+            // By (artist name)
+            const byCell = document.createElement('td');
+            byCell.className = 'col-by hide-on-tablet hide-on-mobile';
+            const artistName = item.item_by || '';
+            byCell.textContent = artistName ? (artistName.length > 15 ? artistName.substring(0, 15) + '...' : artistName) : 'N/A';
+            byCell.title = artistName;
+            row.appendChild(byCell);
 
             // Service (icon and text inline)
             const serviceCell = document.createElement('td');
-            serviceCell.className = 'service-cell hide-on-mobile';
+            serviceCell.className = 'col-service service-cell hide-on-mobile';
             if (item.item_service) {
                 serviceCell.innerHTML = `<img src="/icons/${item.item_service}.png" loading="lazy" style="width: 20px; height: 20px;"><span>${formatServiceName(item.item_service)}</span>`;
             }
@@ -885,13 +898,14 @@
 
             // Status
             const statusCell = document.createElement('td');
+            statusCell.className = 'col-status';
             statusCell.dataset.cell = 'status';
             statusCell.innerHTML = createStatusBadge(item.item_status);
             row.appendChild(statusCell);
 
             // Progress bar
             const progressCell = document.createElement('td');
-            progressCell.className = 'hide-on-tablet hide-on-mobile';
+            progressCell.className = 'col-progress hide-on-tablet hide-on-mobile';
             progressCell.dataset.cell = 'progress';
             const progress = item.progress || 0;
             progressCell.innerHTML = `
@@ -905,6 +919,7 @@
 
             // Action buttons
             const actionCell = document.createElement('td');
+            actionCell.className = 'col-action';
             actionCell.dataset.cell = 'action';
             actionCell.innerHTML = createActionButtons(item);
             row.appendChild(actionCell);
